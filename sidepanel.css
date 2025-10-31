@@ -377,6 +377,94 @@ body {
   margin-left: 4px;
 }
 
+.message-content a {
+  color: var(--primary-color);
+  text-decoration: none;
+  font-weight: 500;
+  border-bottom: 1px solid transparent;
+  transition: var(--transition);
+  position: relative;
+}
+
+.message-content a:hover {
+  color: var(--primary-dark);
+  border-bottom-color: var(--primary-color);
+  transform: translateY(-1px);
+}
+
+.message-content a:visited {
+  color: #8b5cf6;
+}
+
+.message-content a::after {
+  content: "↗";
+  font-size: 10px;
+  margin-left: 3px;
+  opacity: 0.6;
+  transition: var(--transition);
+}
+
+.message-content a:hover::after {
+  opacity: 1;
+  transform: translate(1px, -1px);
+}
+
+.user-message .message-content a {
+  color: #ffd700;
+  border-bottom-color: rgba(255, 215, 0, 0.3);
+}
+
+.user-message .message-content a:hover {
+  color: #ffed4e;
+  border-bottom-color: #ffd700;
+}
+
+.user-message .message-content a::after {
+  color: rgba(255, 215, 0, 0.8);
+}
+
+/* External link styling */
+.external-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: var(--radius-sm);
+  color: var(--primary-color);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: var(--transition);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  margin: 0 2px;
+  cursor: pointer;
+}
+
+.external-link:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: var(--primary-color);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.external-link-icon {
+  font-size: 11px;
+  opacity: 0.8;
+  margin-left: 2px;
+}
+.internal-link {
+  color: var(--primary-color);
+  text-decoration: underline;
+  text-decoration-color: rgba(59, 130, 246, 0.3);
+  transition: var(--transition);
+}
+
+.internal-link:hover {
+  text-decoration-color: var(--primary-color);
+  color: var(--primary-dark);
+}
+
 @keyframes dots {
   0%,
   20% {
@@ -959,7 +1047,16 @@ body {
 .user-message .message-content:hover {
   box-shadow: var(--shadow-md);
 }
+.user-message .external-link {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffd700;
+  border-color: rgba(255, 215, 0, 0.3);
+}
 
+.user-message .external-link:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: #ffd700;
+}
 .loading {
   position: relative;
 }

@@ -18,10 +18,10 @@ class DocumentationGuide {
   async init() {
     this.setupEventListeners();
     this.setupMessageListener();
+    this.setupExternalLinkHandlers();
     await this.checkBackendConnection();
     await this.initializeAI();
     this.requestCurrentTab();
-    await this.loadChatHistory();
   }
 
   async initializeAI() {
@@ -133,23 +133,15 @@ For everything else (greetings, small talk, general knowledge), just answer dire
   }
 
   setupEventListeners() {
-    // Refresh button
-    document.getElementById("refresh-button").addEventListener("click", () => {
-      this.requestCurrentTab();
-    });
-
-    // Chat form
     document.getElementById("chat-form").addEventListener("submit", (e) => {
       e.preventDefault();
       this.handleChatSubmit();
     });
 
-    // Reset button
     document.getElementById("reset-button").addEventListener("click", () => {
       this.resetConversation();
     });
 
-    // New chat button (moved to AI status bar)
     const newChatButton = document.getElementById("new-chat-button");
     if (newChatButton) {
       newChatButton.addEventListener("click", () => {
@@ -158,7 +150,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       });
     }
 
-    // History button
     const historyButton = document.getElementById("history-button");
     if (historyButton) {
       historyButton.addEventListener("click", () => {
@@ -167,7 +158,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       });
     }
 
-    // Delete chat button
     const deleteButton = document.getElementById("delete-chat-button");
     if (deleteButton) {
       deleteButton.addEventListener("click", () => {
@@ -175,7 +165,14 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       });
     }
 
-    // Textarea handling
+    // Refresh/Start indexing button - handled dynamically in updateIndexingUI
+    const refreshButton = document.getElementById("start-indexing-btn");
+    if (refreshButton) {
+      refreshButton.addEventListener("click", () => {
+        this.requestCurrentTab();
+      });
+    }
+
     const textarea = document.getElementById("prompt-input");
     textarea.addEventListener("input", (e) => {
       this.autoResizeTextarea(e);
@@ -186,6 +183,18 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.handleChatSubmit();
+      }
+    });
+  }
+
+  setupExternalLinkHandlers() {
+    document.addEventListener("click", (e) => {
+      const link = e.target.closest("a[data-external-url]");
+      if (link) {
+        e.preventDefault();
+        const url = link.getAttribute("data-external-url");
+
+        chrome.tabs.create({ url: url, active: false });
       }
     });
   }
@@ -343,10 +352,8 @@ For everything else (greetings, small talk, general knowledge), just answer dire
     const modal = document.getElementById("history-modal");
     const historyList = document.getElementById("history-list");
 
-    // Clear existing content
     historyList.innerHTML = "";
 
-    // Sort chats by last updated
     const sortedChats = Array.from(this.chatHistory.values()).sort(
       (a, b) => b.lastUpdated - a.lastUpdated
     );
@@ -382,7 +389,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
           </button>
         `;
 
-        // Add click handler for loading chat
         historyItem.addEventListener("click", (e) => {
           if (!e.target.closest(".delete-chat")) {
             this.loadChat(chat.id);
@@ -390,7 +396,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
           }
         });
 
-        // Add delete button handler
         const deleteBtn = historyItem.querySelector(".delete-chat");
         deleteBtn.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -401,10 +406,8 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       });
     }
 
-    // Show modal
     modal.style.display = "flex";
 
-    // Setup close handlers
     const closeBtn = document.getElementById("close-history");
     const overlay = modal.querySelector(".history-modal-overlay");
 
@@ -427,7 +430,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       this.chatHistory.delete(chatId);
       this.saveChatHistory();
 
-      // If we deleted the current chat, load another one
       if (chatId === this.currentChatId) {
         const entries = Array.from(this.chatHistory.entries());
         const mostRecent = entries.sort(
@@ -436,7 +438,6 @@ For everything else (greetings, small talk, general knowledge), just answer dire
         this.loadChat(mostRecent[0]);
       }
 
-      // Refresh the history modal
       this.showHistoryModal();
     }
   }
@@ -492,11 +493,17 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       const previousDomain = this.currentDomain;
 
       this.currentUrl = tabInfo.url;
+
       if (previousDomain && previousDomain !== domain) {
         console.log(`Domain changed from ${previousDomain} to ${domain}`);
         this.saveChatHistory();
+        this.currentChatId = null;
+        this.chatHistory.clear();
+        this.searchCache.clear();
       }
+
       this.currentDomain = domain;
+
       if (!previousDomain || previousDomain !== domain) {
         this.loadChatHistory();
       }
@@ -585,10 +592,14 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       `;
       this.indexingInProgress = false;
 
+      // Add event listener to dynamically created button
       setTimeout(() => {
         const btn = document.getElementById("start-indexing-btn");
         if (btn) {
-          btn.addEventListener("click", () => this.startIndexing());
+          btn.addEventListener("click", () => {
+            console.log("Start indexing button clicked");
+            this.startIndexing();
+          });
         }
       }, 0);
     }
@@ -626,7 +637,7 @@ For everything else (greetings, small talk, general knowledge), just answer dire
         this.indexingInProgress = true;
         break;
 
-      case "completed":
+      case "complete":
         statusIndicator.className = "status-indicator ready";
         statusText.textContent = this.isInitialized
           ? "AI Ready"
@@ -669,7 +680,10 @@ For everything else (greetings, small talk, general knowledge), just answer dire
     setTimeout(checkProgress, 2000);
   }
 
+  // FIXED: Added the missing startIndexing method
   async startIndexing() {
+    console.log("🚀 Starting indexing process...");
+
     if (!this.currentDomain || !this.currentUrl) {
       console.error("No domain or URL available for indexing");
       return;
@@ -679,16 +693,23 @@ For everything else (greetings, small talk, general knowledge), just answer dire
       const url = new URL(this.currentUrl);
       const baseUrl = `${url.protocol}//${url.host}`;
 
+      console.log(
+        `Starting indexing for domain: ${this.currentDomain}, baseUrl: ${baseUrl}`
+      );
+
       const response = await this.sendMessage({
         type: "START_INDEXING",
         domain: this.currentDomain,
         baseUrl: baseUrl,
       });
 
+      console.log("Indexing response:", response);
+
       if (response.success) {
         this.indexingInProgress = true;
         this.updateIndexingUI({ isCurrentlyIndexing: true });
         this.startIndexingProgressCheck();
+        console.log("✅ Indexing started successfully");
       } else {
         throw new Error(response.error);
       }
@@ -806,6 +827,7 @@ Assistant:
         messageContent.classList.remove("generating");
         const formattedResult = this.formatMarkdown(result);
         messageContent.innerHTML = formattedResult;
+        this.saveMessageToHistory(result, "ai");
       }
 
       this.updateTokenCount();
@@ -814,6 +836,7 @@ Assistant:
       console.error("AI processing error:", error);
       messageContent.classList.remove("generating");
       messageContent.innerHTML = `<p>❌ Sorry, I encountered an error: ${error.message}</p>`;
+      this.saveMessageToHistory("Error: " + error.message, "ai");
     }
   }
 
@@ -864,9 +887,11 @@ Please provide helpful information. Note that specific documentation context is 
       if (searchResults && searchResults.length > 0) {
         this.addSourceLinks(messageContent, searchResults);
       }
+      this.saveMessageToHistory(result, "ai");
     } catch (error) {
       console.error("Contextual response error:", error);
       messageContent.innerHTML = `<p>❌ Error generating response: ${error.message}</p>`;
+      this.saveMessageToHistory("Error: " + error.message, "ai");
     }
   }
 
@@ -937,27 +962,23 @@ Please provide helpful information. Note that specific documentation context is 
       isLoading ? " loading" : ""
     }`;
 
+    const formattedContent = content
+      ? type === "ai"
+        ? this.formatMarkdown(content)
+        : `<p>${content}</p>`
+      : "<p></p>";
+
     messageDiv.innerHTML = `
-      <div class="message-content">
-        <p>${content}</p>
-      </div>
-    `;
+  <div class="message-content">
+    ${formattedContent}
+  </div>
+`;
 
-    if (saveToHistory && this.currentChatId && content.trim()) {
-      const chat = this.chatHistory.get(this.currentChatId);
-      if (chat) {
-        chat.messages.push({ content, type, timestamp: Date.now() });
-        chat.lastUpdated = Date.now();
-
-        if (
-          type === "user" &&
-          chat.messages.filter((m) => m.type === "user").length === 1
-        ) {
-          chat.title =
-            content.substring(0, 50) + (content.length > 50 ? "..." : "");
-        }
-
-        this.saveChatHistory();
+    if (saveToHistory && this.currentChatId) {
+      messageDiv.setAttribute("data-save-to-history", "true");
+      messageDiv.setAttribute("data-message-type", type);
+      if (type === "user" && content.trim()) {
+        this.saveMessageToHistory(content, type);
       }
     }
 
@@ -965,6 +986,30 @@ Please provide helpful information. Note that specific documentation context is 
     this.scrollToBottom();
 
     return messageDiv;
+  }
+
+  saveMessageToHistory(content, type) {
+    if (!this.currentChatId || !content.trim()) return;
+
+    const chat = this.chatHistory.get(this.currentChatId);
+    if (chat) {
+      chat.messages.push({
+        content: content.trim(),
+        type,
+        timestamp: Date.now(),
+      });
+      chat.lastUpdated = Date.now();
+
+      if (
+        type === "user" &&
+        chat.messages.filter((m) => m.type === "user").length === 1
+      ) {
+        chat.title =
+          content.substring(0, 50) + (content.length > 50 ? "..." : "");
+      }
+
+      this.saveChatHistory();
+    }
   }
 
   async resetConversation() {
@@ -1000,13 +1045,165 @@ Please provide helpful information. Note that specific documentation context is 
     }
   }
 
+  formatTables(text) {
+    const tableRegex = /\|.*\|\n\|[-:\s|]+\|\n(\|.*\|\n?)+/g;
+
+    return text.replace(tableRegex, (match) => {
+      const rows = match.trim().split("\n");
+      const headerRow = rows[0];
+      const separatorRow = rows[1];
+      const dataRows = rows.slice(2);
+
+      const headers = headerRow
+        .split("|")
+        .slice(1, -1)
+        .map((h) => h.trim());
+      const data = dataRows.map((row) =>
+        row
+          .split("|")
+          .slice(1, -1)
+          .map((cell) => cell.trim())
+      );
+
+      let table = "<table><thead><tr>";
+      headers.forEach((header) => {
+        table += `<th>${header}</th>`;
+      });
+      table += "</tr></thead><tbody>";
+
+      data.forEach((row) => {
+        table += "<tr>";
+        row.forEach((cell) => {
+          table += `<td>${cell}</td>`;
+        });
+        table += "</tr>";
+      });
+
+      table += "</tbody></table>";
+      return table;
+    });
+  }
+
+  formatLists(text) {
+    text = text.replace(/^(\s*)[-*+] (.+)$/gm, (match, indent, content) => {
+      const level = Math.floor(indent.length / 2);
+      return `<li style="margin-left: ${level * 20}px">${content}</li>`;
+    });
+
+    text = text.replace(/^(\s*)\d+\. (.+)$/gm, (match, indent, content) => {
+      const level = Math.floor(indent.length / 2);
+      return `<li style="margin-left: ${level * 20}px">${content}</li>`;
+    });
+
+    text = text.replace(/(<li[^>]*>.*<\/li>\n?)+/g, (match) => {
+      const hasNumbers =
+        match.includes("1.") || match.includes("2.") || match.includes("3.");
+      const listType = hasNumbers ? "ol" : "ul";
+      return `<${listType}>${match}</${listType}>`;
+    });
+
+    return text;
+  }
+
   formatMarkdown(text) {
-    return text
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.*?)\*/g, "<em>$1</em>")
-      .replace(/`(.*?)`/g, "<code>$1</code>")
-      .replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>")
-      .replace(/\n/g, "<br>");
+    if (!text) return "";
+
+    text = text.replace(
+      /```(\w+)?\n?([\s\S]*?)```/g,
+      (match, language, code) => {
+        const lang = language ? language.toLowerCase() : "text";
+        const langDisplay = language ? language.toUpperCase() : "CODE";
+        const codeId = "code_" + Math.random().toString(36).substr(2, 9);
+
+        return `<div class="code-block">
+        <div class="code-header">
+          <span class="code-language">${langDisplay}</span>
+          <button class="copy-button" onclick="window.copyCode('${codeId}')">Copy</button>
+        </div>
+        <div class="code-content">
+          <pre id="${codeId}"><code class="language-${lang}">${this.escapeHtml(
+          code.trim()
+        )}</code></pre>
+        </div>
+      </div>`;
+      }
+    );
+
+    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    text = text.replace(/^### (.*$)/gm, "<h3>$1</h3>");
+    text = text.replace(/^## (.*$)/gm, "<h2>$1</h2>");
+    text = text.replace(/^# (.*$)/gm, "<h1>$1</h1>");
+
+    text = text.replace(/\*\*\*(.*?)\*\*\*/g, "<strong><em>$1</em></strong>");
+    text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    text = text.replace(/\*(.*?)\*/g, "<em>$1</em>");
+
+    text = text.replace(/~~(.*?)~~/g, "<del>$1</del>");
+
+    text = text.replace(/^> (.*$)/gm, "<blockquote>$1</blockquote>");
+
+    text = text.replace(/^---$/gm, "<hr>");
+
+    text = this.formatTables(text);
+
+    text = this.formatLists(text);
+
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+      const isExternal =
+        url.startsWith("http://") || url.startsWith("https://");
+
+      if (isExternal) {
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="external-link" data-external-url="${url}">
+        ${linkText}
+        <span class="external-link-icon">↗</span>
+      </a>`;
+      }
+
+      return `<a href="${url}" class="internal-link">${linkText}</a>`;
+    });
+
+    text = text.replace(
+      /(?<!href="|data-external-url=")(https?:\/\/[^\s<>"]+)/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer" class="external-link" data-external-url="$1">$1 <span class="external-link-icon">↗</span></a>'
+    );
+
+    text = text.replace(/\n\n/g, "</p><p>");
+    text = text.replace(/\n/g, "<br>");
+
+    if (
+      !text.includes("<p>") &&
+      !text.includes("<div>") &&
+      !text.includes("<ul>") &&
+      !text.includes("<ol>")
+    ) {
+      text = "<p>" + text + "</p>";
+    }
+
+    return text;
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  copyCode(codeId) {
+    const codeElement = document.getElementById(codeId);
+    if (codeElement) {
+      const text = codeElement.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const button = event.target;
+        const originalText = button.textContent;
+        button.textContent = "Copied!";
+        button.style.background = "var(--success-color)";
+        setTimeout(() => {
+          button.textContent = originalText;
+          button.style.background = "";
+        }, 2000);
+      });
+    }
   }
 
   scrollToBottom() {
@@ -1053,6 +1250,24 @@ Please provide helpful information. Note that specific documentation context is 
     });
   }
 }
+
+// Expose copyCode function globally for onclick handlers
+window.copyCode = function (codeId) {
+  const codeElement = document.getElementById(codeId);
+  if (codeElement) {
+    const text = codeElement.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const button = event.target;
+      const originalText = button.textContent;
+      button.textContent = "Copied!";
+      button.style.background = "var(--success-color)";
+      setTimeout(() => {
+        button.textContent = originalText;
+        button.style.background = "";
+      }, 2000);
+    });
+  }
+};
 
 document.addEventListener("DOMContentLoaded", () => {
   new DocumentationGuide();

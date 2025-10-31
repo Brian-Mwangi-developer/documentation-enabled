@@ -1,8 +1,9 @@
+
 // background.js
 const CONFIG = {
   BACKEND_URL: "http://localhost:3000",
   DEBUG: true,
-  MAX_URLS_TO_CRAWL: 5,
+  MAX_URLS_TO_CRAWL: 50,
 };
 
 let indexingStatus = new Map();
@@ -38,8 +39,8 @@ async function initializeStorage() {
       await chrome.storage.local.set({
         userPreferences: {
           autoIndex: false,
-          chunkSize: CONFIG.CHUNK_SIZE,
-          maxChunks: CONFIG.MAX_CHUNKS_PER_DOC,
+          chunkSize: 1000,
+          maxChunks: 50,
         },
       });
     }
@@ -96,6 +97,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     console.error("Error opening side panel:", error);
   }
 });
+
 function sendTabInfoToSidepanel(tab) {
   setTimeout(() => {
     chrome.runtime
@@ -114,10 +116,16 @@ function sendTabInfoToSidepanel(tab) {
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === "complete" && tab.url) {
-    const url = new URL(tab.url);
-    const domain = url.hostname;
-    await updateIconForDomain(domain, tabId);
-    sendTabInfoToSidepanel(tab);
+    try {
+      const url = new URL(tab.url);
+      const domain = url.hostname;
+      await updateIconForDomain(domain, tabId);
+      sendTabInfoToSidepanel(tab);
+    } catch (error) {
+      if (CONFIG.DEBUG) {
+        console.log("Error processing tab update:", error.message);
+      }
+    }
   }
 });
 
@@ -164,15 +172,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   sendResponse({ received: true });
 });
 
-//Test
+// Test backend connection
 async function testBackendConnection(sendResponse) {
   try {
     console.log("Testing backend connection...");
 
-    const response = await fetch(`${CONFIG.BACKEND_URL}/health`);
-    const result = await response.json();
+    const response = await fetch(`${CONFIG.BACKEND_URL}/health`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
 
     if (response.ok) {
+      const result = await response.json();
       console.log("✅ Backend Connected:", result);
       sendResponse({
         success: true,
@@ -180,7 +193,7 @@ async function testBackendConnection(sendResponse) {
         data: result,
       });
     } else {
-      throw new Error(`Backend returned ${response.status}`);
+      throw new Error(`Backend returned ${response.status}: ${response.statusText}`);
     }
   } catch (error) {
     console.error("❌ Backend connection failed:", error);
@@ -190,40 +203,30 @@ async function testBackendConnection(sendResponse) {
     });
   }
 }
+
 function prioritizeDocumentationUrls(urls, baseUrl) {
- 
   const docPatterns = [
     { pattern: /getting.?started|quick.?start|tutorial|guide/i, score: 100 },
     { pattern: /introduction|intro|overview|welcome/i, score: 95 },
-
     { pattern: /api|reference|docs?\/api/i, score: 90 },
     { pattern: /documentation|docs?\//i, score: 85 },
-
     { pattern: /install|setup|configuration|config/i, score: 80 },
     { pattern: /authentication|auth|login/i, score: 75 },
-
     { pattern: /concepts|fundamentals|basics|core/i, score: 70 },
     { pattern: /examples?|samples?|demo/i, score: 65 },
-
-
     { pattern: /features?|components?|modules?/i, score: 60 },
     { pattern: /integration|webhook|sdk/i, score: 55 },
-
-    // Lower priority - Advanced topics
     { pattern: /advanced|migration|troubleshooting/i, score: 50 },
     { pattern: /faq|help|support/i, score: 45 },
-
-    // Specific documentation sites patterns
-    { pattern: /\/v\d+\/|version/i, score: 40 }, // Version-specific docs
+    { pattern: /\/v\d+\/|version/i, score: 40 },
     { pattern: /changelog|release|updates/i, score: 35 },
   ];
 
-  // Additional boost for common documentation URL structures
   const structureBoosts = [
-    { pattern: /^[^\/]*\/docs?\//i, boost: 20 }, // /docs/ in path
-    { pattern: /^[^\/]*\/(guide|tutorial|api)\//i, boost: 15 }, // /guide/, /tutorial/, /api/
-    { pattern: /readme/i, boost: 10 }, // README files
-    { pattern: /index|home|main/i, boost: 5 }, // Index pages
+    { pattern: /^[^\/]*\/docs?\//i, boost: 20 },
+    { pattern: /^[^\/]*\/(guide|tutorial|api)\//i, boost: 15 },
+    { pattern: /readme/i, boost: 10 },
+    { pattern: /index|home|main/i, boost: 5 },
   ];
 
   const scoredUrls = urls.map((url) => {
@@ -231,11 +234,11 @@ function prioritizeDocumentationUrls(urls, baseUrl) {
     const urlLower = url.toLowerCase();
     const urlPath = url.replace(baseUrl, "").toLowerCase();
 
-    // Check documentation patterns
+    // Apply pattern scoring
     for (const { pattern, score: patternScore } of docPatterns) {
       if (pattern.test(urlLower)) {
         score = Math.max(score, patternScore);
-        break; // Take highest matching pattern
+        break;
       }
     }
 
@@ -246,16 +249,16 @@ function prioritizeDocumentationUrls(urls, baseUrl) {
       }
     }
 
-    // Boost for shorter, cleaner URLs (likely more important)
+    // Path depth scoring
     const pathDepth = (urlPath.match(/\//g) || []).length;
     if (pathDepth <= 2) score += 10;
     if (pathDepth <= 1) score += 5;
 
-    // Penalty for very long URLs or query parameters
+    // Penalties
     if (url.includes("?")) score -= 10;
     if (url.length > 100) score -= 5;
 
-    // Boost for root documentation pages
+    // Root path bonus
     if (
       urlPath === "/" ||
       urlPath === "" ||
@@ -268,7 +271,6 @@ function prioritizeDocumentationUrls(urls, baseUrl) {
     return { url, score };
   });
 
-  // Sort by score (highest first) and return URLs
   return scoredUrls
     .sort((a, b) => b.score - a.score)
     .map((item) => {
@@ -296,8 +298,6 @@ async function handleCheckIndexingStatus(domain, sendResponse) {
       "indexedDomains",
     ]);
     const domainInfo = indexedDomains[domain];
-
-    // Check if currently indexing
     const isCurrentlyIndexing = indexingStatus.has(domain);
 
     const status = {
@@ -307,6 +307,7 @@ async function handleCheckIndexingStatus(domain, sendResponse) {
       isCurrentlyIndexing: isCurrentlyIndexing,
     };
 
+    console.log(`📊 Indexing status for ${domain}:`, status);
     sendResponse({ success: true, status });
   } catch (error) {
     console.error("Error checking indexing status:", error);
@@ -316,11 +317,15 @@ async function handleCheckIndexingStatus(domain, sendResponse) {
 
 async function handleStartIndexing(domain, baseUrl, sendResponse) {
   try {
+    console.log(`🚀 Starting indexing for ${domain} with baseUrl: ${baseUrl}`);
+
     if (indexingStatus.has(domain)) {
+      console.warn(`Already indexing ${domain}`);
       sendResponse({ success: false, error: "Already indexing this domain" });
       return;
     }
 
+    // Initialize indexing status
     indexingStatus.set(domain, {
       status: "starting",
       progress: 0,
@@ -328,15 +333,18 @@ async function handleStartIndexing(domain, baseUrl, sendResponse) {
       startTime: Date.now(),
     });
 
+    // Send immediate response
     sendResponse({ success: true, message: "Indexing started" });
 
-    console.log(`the Base Url is ${baseUrl}`);
-    await fetch("http://localhost:3000/api/sitemap");
-    startDocumentationIndexing(domain, baseUrl);
+    // Start the actual indexing process
+    await startDocumentationIndexing(domain, baseUrl);
+
   } catch (error) {
     console.error("Error starting indexing:", error);
     indexingStatus.delete(domain);
-    sendResponse({ success: false, error: error.message });
+    updateIndexingStatus(domain, "error", 0, `Error: ${error.message}`);
+    
+    // Don't call sendResponse here as it was already called above
   }
 }
 
@@ -351,15 +359,18 @@ function handleGetIndexingProgress(domain, sendResponse) {
     });
   }
 }
+
 async function handleStreamEvent(domain, data, totalUrls) {
+  console.log(`📡 Stream event for ${domain}:`, data.type, data.message);
+
   switch (data.type) {
     case "start":
-      updateIndexingStatus(domain, "starting", 25, data.message);
+      updateIndexingStatus(domain, "starting", 5, data.message || "Starting indexing...");
       break;
 
     case "progress":
-      const progress = 25 + data.progress * 0.6; // Scale to 25-85%
-      updateIndexingStatus(domain, "crawling", progress, data.message);
+      const progress = 10 + (data.progress || 0) * 0.6; // Scale to 10-70%
+      updateIndexingStatus(domain, "crawling", progress, data.message || "Processing...");
       break;
 
     case "scraping":
@@ -394,10 +405,10 @@ async function handleStreamEvent(domain, data, totalUrls) {
       break;
 
     case "url_complete":
-      const completedProgress = 25 + (data.progress || 0) * 0.6;
+      const completedProgress = 10 + (data.progress || 0) * 0.6;
       const message = data.wasAlreadyIndexed
-        ? `Domain already indexed: ${data.url}`
-        : `Completed: ${data.chunks} chunks, ${data.vectors} vectors`;
+        ? `Already indexed: ${data.url}`
+        : `Completed: ${data.chunks || 0} chunks, ${data.vectors || 0} vectors`;
       updateIndexingStatus(domain, "processing", completedProgress, message);
       break;
 
@@ -412,11 +423,11 @@ async function handleStreamEvent(domain, data, totalUrls) {
       break;
 
     case "complete":
-      updateIndexingStatus(domain, "finalizing", 90, data.message);
+      updateIndexingStatus(domain, "finalizing", 90, data.message || "Finalizing...");
       break;
 
     case "error":
-      throw new Error(data.message);
+      throw new Error(data.message || "Unknown error during indexing");
   }
 }
 
@@ -428,10 +439,12 @@ async function startDocumentationIndexing(domain, baseUrl) {
     updateIndexingStatus(
       domain,
       "discovering",
-      10,
+      5,
       "Discovering documentation URLs..."
     );
 
+    console.log(`🔍 Fetching sitemap from: ${CONFIG.BACKEND_URL}/api/sitemap`);
+    
     const sitemapResponse = await fetch(`${CONFIG.BACKEND_URL}/api/sitemap`, {
       method: "POST",
       headers: {
@@ -440,67 +453,91 @@ async function startDocumentationIndexing(domain, baseUrl) {
       body: JSON.stringify({ url: baseUrl }),
     });
 
+    console.log(`📡 Sitemap response status: ${sitemapResponse.status}`);
+
     if (!sitemapResponse.ok) {
-      throw new Error(`Sitemap extraction failed: ${sitemapResponse.status}`);
+      const errorText = await sitemapResponse.text();
+      console.error(`❌ Sitemap error response:`, errorText);
+      throw new Error(`Sitemap extraction failed: ${sitemapResponse.status} - ${errorText}`);
     }
 
     const sitemapData = await sitemapResponse.json();
+    console.log(`📄 Sitemap data received:`, sitemapData);
 
-    if (
-      !sitemapData.success ||
-      !sitemapData.urls ||
-      sitemapData.urls.length === 0
-    ) {
-      throw new Error("No URLs found in sitemap");
+    if (!sitemapData.success || !sitemapData.urls || sitemapData.urls.length === 0) {
+      throw new Error(`No URLs found in sitemap. Response: ${JSON.stringify(sitemapData)}`);
     }
 
-    const urls = sitemapData.urls;
-    console.log(`📄 Discovered ${urls.length} URLs from sitemap`);
+    const allUrls = sitemapData.urls;
+    console.log(`📄 Discovered ${allUrls.length} URLs from sitemap`);
+    
+    updateIndexingStatus(
+      domain,
+      "prioritizing",
+      10,
+      "Prioritizing key documentation pages..."
+    );
+
+    const prioritizedUrls = prioritizeDocumentationUrls(allUrls, baseUrl);
+    const finalUrls = prioritizedUrls.slice(0, CONFIG.MAX_URLS_TO_CRAWL);
+
+    console.log(`🎯 Selected ${finalUrls.length} URLs for indexing:`, finalUrls.slice(0, 5));
 
     updateIndexingStatus(
       domain,
       "crawling",
-      30,
-      `Processing ${urls.length} pages...`
+      15,
+      `Processing ${finalUrls.length} pages...`
     );
 
     // Step 2: Send URLs to backend for crawling and indexing
+    console.log(`🚀 Starting crawl with: ${CONFIG.BACKEND_URL}/api/crawl`);
+    
     const crawlResponse = await fetch(`${CONFIG.BACKEND_URL}/api/crawl`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ urls: urls, userEmail: userEmail }),
+      body: JSON.stringify({ 
+        urls: finalUrls, 
+        userEmail: userEmail || 'anonymous@example.com',
+        domain: domain
+      }),
     });
 
+    console.log(`📡 Crawl response status: ${crawlResponse.status}`);
+
     if (!crawlResponse.ok) {
-      throw new Error(`Crawling failed: ${crawlResponse.status}`);
+      const errorText = await crawlResponse.text();
+      console.error(`❌ Crawl error response:`, errorText);
+      throw new Error(`Crawling failed: ${crawlResponse.status} - ${errorText}`);
     }
 
+    // Process streaming response
     const reader = crawlResponse.body.getReader();
     const decoder = new TextDecoder();
-
     let processedCount = 0;
-    let totalUrls = Math.min(sitemapData.urls.length, 5);
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       const lines = chunk.split("\n");
 
       for (const line of lines) {
         if (line.startsWith("data: ")) {
           try {
             const data = JSON.parse(line.slice(6));
-            await handleStreamEvent(domain, data, totalUrls);
+            console.log(`📊 Stream data:`, data);
+            
+            await handleStreamEvent(domain, data, finalUrls.length);
 
             if (data.type === "url_complete") {
               processedCount++;
             }
           } catch (e) {
-            console.error("Error parsing SSE data:", e);
+            console.error("Error parsing SSE data:", e, "Line:", line);
           }
         }
       }
@@ -512,14 +549,17 @@ async function startDocumentationIndexing(domain, baseUrl) {
 
     updateIndexingStatus(
       domain,
-      "completed",
+      "complete",
       100,
       `Successfully indexed ${processedCount} pages!`
     );
 
+    // Clean up after 3 seconds
     setTimeout(() => {
       indexingStatus.delete(domain);
+      console.log(`✅ Indexing completed for ${domain}`);
     }, 3000);
+
   } catch (error) {
     console.error(`❌ Indexing failed for ${domain}:`, error);
     updateIndexingStatus(domain, "error", 0, `Error: ${error.message}`);
@@ -549,7 +589,11 @@ function updateIndexingStatus(domain, status, progress, message) {
       domain,
       statusData,
     })
-    .catch(() => {});
+    .catch((error) => {
+      if (CONFIG.DEBUG) {
+        console.log("Failed to send status update to sidepanel:", error.message);
+      }
+    });
 
   if (CONFIG.DEBUG) {
     console.log(`📊 ${domain}: ${status} - ${progress}% - ${message}`);
@@ -557,21 +601,28 @@ function updateIndexingStatus(domain, status, progress, message) {
 }
 
 async function updateDomainIndex(domain, urlCount) {
-  const { indexedDomains } = await chrome.storage.local.get(["indexedDomains"]);
+  try {
+    const { indexedDomains } = await chrome.storage.local.get(["indexedDomains"]);
 
-  indexedDomains[domain] = {
-    lastIndexed: Date.now(),
-    urlCount: urlCount,
-    version: "1.0",
-  };
+    indexedDomains[domain] = {
+      lastIndexed: Date.now(),
+      urlCount: urlCount,
+      version: "1.0",
+    };
 
-  await chrome.storage.local.set({ indexedDomains });
-  console.log(`📝 Updated local storage for domain: ${domain}`);
+    await chrome.storage.local.set({ indexedDomains });
+    console.log(`📝 Updated local storage for domain: ${domain}`);
+
+    // Update icon to show indexed status
+    await updateIconForDomain(domain);
+  } catch (error) {
+    console.error("Error updating domain index:", error);
+  }
 }
 
 async function handleSearchDocumentation(query, domain, sendResponse) {
   try {
-    console.log(`🔍 Searching for: "${query}" using backend`);
+    console.log(`🔍 Searching for: "${query}" in domain: ${domain}`);
 
     const searchResponse = await fetch(`${CONFIG.BACKEND_URL}/api/search`, {
       method: "POST",
@@ -580,30 +631,35 @@ async function handleSearchDocumentation(query, domain, sendResponse) {
       },
       body: JSON.stringify({
         query: query,
-        userEmail: userEmail,
+        userEmail: userEmail || 'anonymous@example.com',
         topK: 5,
         domain: domain,
       }),
     });
 
+    console.log(`📡 Search response status: ${searchResponse.status}`);
+
     if (!searchResponse.ok) {
-      throw new Error(`Search failed: ${searchResponse.status}`);
+      const errorText = await searchResponse.text();
+      console.error(`❌ Search error response:`, errorText);
+      throw new Error(`Search failed: ${searchResponse.status} - ${errorText}`);
     }
 
     const searchData = await searchResponse.json();
+    console.log(`📊 Search data received:`, searchData);
 
     if (!searchData.success) {
-      throw new Error("Search process failed");
+      throw new Error(`Search process failed: ${searchData.error || 'Unknown error'}`);
     }
 
-    console.log(`📊 Found ${searchData.results.length} search results`);
+    console.log(`📊 Found ${searchData.results?.length || 0} search results`);
 
-    // Format results for the AI
-    const contextChunks = searchData.results.map((result) => ({
-      content: result.text,
-      url: result.url,
-      score: result.score,
-      chunkIndex: result.chunkIndex,
+    const contextChunks = (searchData.results || []).map((result) => ({
+      content: result.text || result.content || '',
+      url: result.url || '',
+      score: result.score || 0,
+      chunkIndex: result.chunkIndex || 0,
+      title: result.title || result.url || 'Untitled',
     }));
 
     sendResponse({
