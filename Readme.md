@@ -2,6 +2,8 @@
 
 An intelligent Chrome extension that helps you navigate and understand documentation websites using AI-powered search and chat functionality.
 
+Backend in :"https://github.com/Brian-Mwangi-developer/backend-docs-enable"
+
 ## Features
 
 - 🤖 **AI-Powered Chat**: Built-in Chrome AI (Gemini Nano) for intelligent conversations
